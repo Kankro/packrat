@@ -1,13 +1,11 @@
 {
-    "type": "code",
-    "modid": "packrat",
-    "name": "Packrat",
-    "authors": [
-        "dizzyd"
-    ],
-    "description": "Access multiple containers from a single dialog",
-    "version": "1.0.1",
-    "dependencies": {
-        "game": ""
-    }
+  "type": "code",
+  "modid": "packratfork",
+  "name": "Packrat",
+  "authors": ["dizzyd", "Kankros"],
+  "description": "Access multiple containers from a single dialog",
+  "version": "1.1.0",
+  "dependencies": {
+    "game": "1.22.2"
+  }
 }
