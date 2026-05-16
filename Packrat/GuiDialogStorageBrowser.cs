@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using Cairo;
 using Vintagestory.API.Client;
@@ -22,6 +23,7 @@ public class GuiDialogStorageBrowser : GuiDialog
     private readonly List<BlockEntityContainer> _containers;
     private readonly ICoreClientAPI _capi;
     private readonly Action<SortMode> _onSortModeChanged;
+    private readonly Action<bool> _onShowEmptySlotsChanged;
 
     private const int Cols = 10;
     private const int MaxVisibleRows = 8;
@@ -67,13 +69,15 @@ public class GuiDialogStorageBrowser : GuiDialog
         ICoreClientAPI capi,
         SortedInventoryView sortedInventory,
         List<BlockEntityContainer> containers,
-        Action<SortMode> onSortModeChanged = null)
+        Action<SortMode> onSortModeChanged = null,
+        Action<bool> onShowEmptySlotsChanged = null)
         : base(capi)
     {
         _capi = capi;
         _sortedInventory = sortedInventory;
         _containers = containers;
         _onSortModeChanged = onSortModeChanged;
+        _onShowEmptySlotsChanged = onShowEmptySlotsChanged;
 
         // Make dialog movable by default (set initial position if none stored)
         if (_capi.Gui.GetDialogPosition(DialogName) == null)
@@ -116,11 +120,14 @@ public class GuiDialogStorageBrowser : GuiDialog
         double slotSize = GuiElementPassiveItemSlot.unscaledSlotSize;
         double elemToDlgPad = GuiStyle.ElementToDialogPadding;
 
-        // Search box and sort dropdown dimensions
+        // Search box, sort dropdown, and empty-slots toggle dimensions
         double controlRowHeight = 30;
         double gridWidth = (slotSize + pad) * Cols;
-        double dropdownWidth = 90;
-        double searchBoxWidth = gridWidth + 12 - dropdownWidth - 8; // Leave room for dropdown
+        double sortDropdownWidth = 96;
+        double switchSize = 24;
+        double showEmptyLabelWidth = 86;
+        double showEmptyTotalWidth = showEmptyLabelWidth + 6 + switchSize;
+        double searchBoxWidth = gridWidth + 12 - sortDropdownWidth - showEmptyTotalWidth - 16;
 
         // Background bounds - child elements will be positioned relative to this
         ElementBounds bgBounds = ElementBounds.Fill.WithFixedPadding(elemToDlgPad);
@@ -133,7 +140,12 @@ public class GuiDialogStorageBrowser : GuiDialog
         ElementBounds searchBounds = ElementBounds.Fixed(0, titleBarHeight, searchBoxWidth, controlRowHeight);
 
         // Sort dropdown bounds - to the right of search box
-        ElementBounds sortDropdownBounds = ElementBounds.Fixed(searchBoxWidth + 8, titleBarHeight, dropdownWidth, controlRowHeight);
+        ElementBounds sortDropdownBounds = ElementBounds.Fixed(searchBoxWidth + 8, titleBarHeight, sortDropdownWidth, controlRowHeight);
+
+        // Empty slot toggle: label + switch to the right of sort dropdown
+        double showEmptyX = searchBoxWidth + 8 + sortDropdownWidth + 8;
+        ElementBounds showEmptyLabelBounds = ElementBounds.Fixed(showEmptyX, titleBarHeight + 6, showEmptyLabelWidth, 20);
+        ElementBounds showEmptySwitchBounds = ElementBounds.Fixed(showEmptyX + showEmptyLabelWidth + 6, titleBarHeight + 3, switchSize, switchSize);
 
         // Slot grid bounds - positioned below search box
         ElementBounds slotGridBounds = ElementStdBounds.SlotGrid(EnumDialogArea.None, pad, titleBarHeight + controlRowHeight + 8 + pad, Cols, visibleRows);
@@ -147,6 +159,7 @@ public class GuiDialogStorageBrowser : GuiDialog
 
         string title = Lang.Get($"{PackratModSystem.ModId}:browser-title");
         string searchPlaceholder = Lang.Get($"{PackratModSystem.ModId}:search-placeholder");
+        string showEmptyLabel = Lang.Get($"{PackratModSystem.ModId}:show-empty-label");
 
         ElementBounds dialogBounds = ElementStdBounds.AutosizedMainDialog
             .WithAlignment(EnumDialogArea.CenterMiddle);
@@ -159,6 +172,8 @@ public class GuiDialogStorageBrowser : GuiDialog
             .BeginChildElements(bgBounds)
                 .AddTextInput(searchBounds, OnSearchTextChanged, CairoFont.WhiteSmallText(), "searchbox")
                 .AddDropDown(SortModeNames, SortModeNames, (int)_sortedInventory.SortMode, OnSortModeSelected, sortDropdownBounds, "sortdropdown")
+                .AddStaticText(showEmptyLabel, CairoFont.WhiteSmallText(), showEmptyLabelBounds)
+                .AddSwitch(OnShowEmptyToggled, showEmptySwitchBounds, "showemptyswitch", switchSize)
                 .AddInset(insetBounds);
 
         if (needsScrollbar)
@@ -203,6 +218,9 @@ public class GuiDialogStorageBrowser : GuiDialog
             searchBox.SetValue(_searchFilter);
         }
 
+        // Restore switch state
+        SingleComposer.GetSwitch("showemptyswitch").SetValue(_sortedInventory.ShowEmptySlotsWhenSorting);
+
         // Restore focus state from before recompose
         if (_searchHadFocus)
         {
@@ -224,10 +242,28 @@ public class GuiDialogStorageBrowser : GuiDialog
         if (index < 0) return;
 
         var newMode = (SortMode)index;
-        if (newMode == _sortedInventory.SortMode) return;
 
-        _sortedInventory.SortMode = newMode;
-        _onSortModeChanged?.Invoke(newMode);
+        if (newMode != _sortedInventory.SortMode)
+        {
+            _sortedInventory.SortMode = newMode;
+            _onSortModeChanged?.Invoke(newMode);
+        }
+        else
+        {
+            // Same mode clicked again - force a rebuild so any inventory changes since last sort are applied
+            _sortedInventory.RebuildDisplayOrder();
+        }
+
+        // Always recompose so the slot grid reflects the current sort order
+        ComposeDialog();
+    }
+
+    private void OnShowEmptyToggled(bool on)
+    {
+        if (_sortedInventory.ShowEmptySlotsWhenSorting == on) return;
+
+        _sortedInventory.ShowEmptySlotsWhenSorting = on;
+        _onShowEmptySlotsChanged?.Invoke(on);
 
         // Recompose the dialog since slot count may have changed
         ComposeDialog();
@@ -235,9 +271,6 @@ public class GuiDialogStorageBrowser : GuiDialog
 
     private void DrawContainerOutlines(Context ctx, ImageSurface surface, ElementBounds currentBounds)
     {
-        // Skip container outlines when sorting or filtering is active
-        if (_sortedInventory.IsSorting || _sortedInventory.IsFiltering) return;
-
         double pad = GuiElementItemSlotGrid.unscaledSlotPadding;
         double slotSize = GuiElementPassiveItemSlot.unscaledSlotSize;
         double cellSize = slotSize + pad;
@@ -245,6 +278,35 @@ public class GuiDialogStorageBrowser : GuiDialog
         // Scale for current GUI scale
         double scale = RuntimeEnv.GUIScale;
         cellSize *= scale;
+
+        if (_sortedInventory.IsSorting || _sortedInventory.IsFiltering)
+        {
+            // In sorted/filtered views, keep original container colors by slot origin.
+            for (int displayIndex = 0; displayIndex < _sortedInventory.Count; displayIndex++)
+            {
+                int underlyingIndex = _sortedInventory.GetUnderlyingSlotIndex(displayIndex);
+                if (underlyingIndex < 0) continue;
+
+                int slotColorIndex = GetContainerColorIndex(underlyingIndex);
+                if (slotColorIndex < 0) continue;
+                var color = ContainerColors[slotColorIndex % ContainerColors.Length];
+
+                int row = displayIndex / Cols;
+                int col = displayIndex % Cols;
+
+                double x = col * cellSize;
+                double y = row * cellSize;
+                double width = cellSize;
+                double height = cellSize;
+                double radius = 4 * scale;
+
+                ctx.SetSourceRGBA(color[0], color[1], color[2], 0.25);
+                DrawRoundedRectangle(ctx, x, y, width, height, radius);
+                ctx.Fill();
+            }
+
+            return;
+        }
 
         int colorIndex = 0;
         foreach (var (startIndex, count) in _sortedInventory.Underlying.ContainerBoundaries)
@@ -285,6 +347,23 @@ public class GuiDialogStorageBrowser : GuiDialog
         }
     }
 
+    private int GetContainerColorIndex(int underlyingSlotIndex)
+    {
+        int colorIndex = 0;
+        foreach (var (startIndex, count) in _sortedInventory.Underlying.ContainerBoundaries)
+        {
+            int endIndex = startIndex + count;
+            if (underlyingSlotIndex >= startIndex && underlyingSlotIndex < endIndex)
+            {
+                return colorIndex;
+            }
+
+            colorIndex++;
+        }
+
+        return -1;
+    }
+
     private void DrawRoundedRectangle(Context ctx, double x, double y, double width, double height, double radius)
     {
         ctx.MoveTo(x + radius, y);
@@ -323,6 +402,13 @@ public class GuiDialogStorageBrowser : GuiDialog
         }
     }
 
+    // Parallel arrays: index i in _materialNames corresponds to _materialEnums[i], same for food.
+    // Enum.GetNames and Enum.GetValues are guaranteed to return values in the same order.
+    private static readonly string[] _materialNames = Enum.GetNames(typeof(EnumBlockMaterial)).Select(n => n.ToLowerInvariant()).ToArray();
+    private static readonly EnumBlockMaterial[] _materialEnums = (EnumBlockMaterial[])Enum.GetValues(typeof(EnumBlockMaterial));
+    private static readonly string[] _foodCategoryNames = Enum.GetNames(typeof(EnumFoodCategory)).Select(n => n.ToLowerInvariant()).ToArray();
+    private static readonly EnumFoodCategory[] _foodCategoryEnums = (EnumFoodCategory[])Enum.GetValues(typeof(EnumFoodCategory));
+
     private void OnSearchTextChanged(string text)
     {
         _searchFilter = text?.Trim().ToLowerInvariant() ?? "";
@@ -330,28 +416,26 @@ public class GuiDialogStorageBrowser : GuiDialog
         _matchedMaterials.Clear();
         _matchedFoodCategories.Clear();
 
-        if (!string.IsNullOrEmpty(_searchFilter))
+        if (_searchFilter.Length > 0)
         {
-            // Cache which EnumBlockMaterial values match the filter
-            foreach (EnumBlockMaterial material in Enum.GetValues(typeof(EnumBlockMaterial)))
+            ReadOnlySpan<char> filter = _searchFilter.AsSpan();
+
+            for (int i = 0; i < _materialNames.Length; i++)
             {
-                if (material.ToString().ToLowerInvariant().Contains(_searchFilter))
-                    _matchedMaterials.Add(material);
+                if (_materialNames[i].AsSpan().Contains(filter, StringComparison.Ordinal))
+                    _matchedMaterials.Add(_materialEnums[i]);
             }
 
-            // Cache which EnumFoodCategory values match the filter
-            foreach (EnumFoodCategory category in Enum.GetValues(typeof(EnumFoodCategory)))
+            for (int i = 0; i < _foodCategoryNames.Length; i++)
             {
-                if (category.ToString().ToLowerInvariant().Contains(_searchFilter))
-                    _matchedFoodCategories.Add(category);
+                if (_foodCategoryNames[i].AsSpan().Contains(filter, StringComparison.Ordinal))
+                    _matchedFoodCategories.Add(_foodCategoryEnums[i]);
             }
 
-            // Set filter predicate to filter the inventory view
             _sortedInventory.FilterPredicate = SlotMatchesFilterPredicate;
         }
         else
         {
-            // Clear the filter
             _sortedInventory.FilterPredicate = null;
         }
     }
@@ -477,10 +561,13 @@ public class GuiDialogStorageBrowser : GuiDialog
     {
         base.OnRenderGUI(deltaTime);
 
-        // Check if slot count changed and recompose if needed
+        // Check if slot count changed or sort order changed due to inventory modifications
+        bool needsRecompose = _sortedInventory.NeedsRecompose;
         int currentCount = _sortedInventory.Count;
-        if (currentCount != _lastSlotCount)
+        if (needsRecompose || currentCount != _lastSlotCount)
         {
+            _sortedInventory.ClearRecomposeFlag();
+
             // Save scroll position and search focus before recomposing
             var scrollbar = SingleComposer?.GetScrollbar("scrollbar");
             _savedScrollPosition = scrollbar?.CurrentYPosition ?? 0f;

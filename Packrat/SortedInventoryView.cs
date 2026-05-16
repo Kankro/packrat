@@ -9,12 +9,13 @@ namespace Packrat;
 /// <summary>
 /// A wrapper around CompositeInventoryView that provides sorted/filtered views.
 /// When SortMode is None, passes through directly to the underlying inventory.
-/// When sorting is active, only non-empty slots are shown, in sorted order.
+/// When sorting is active, all slots are shown with empty slots moved to the end.
 /// </summary>
 public class SortedInventoryView : InventoryBase
 {
     private readonly CompositeInventoryView _underlying;
     private SortMode _sortMode = SortMode.None;
+    private bool _showEmptySlotsWhenSorting = true;
 
     // Maps display position -> underlying slot index (only used when sorting)
     private int[] _displayOrder;
@@ -24,6 +25,9 @@ public class SortedInventoryView : InventoryBase
 
     // Track if display order needs rebuilding
     private bool _isDirty;
+
+    // Track if the dialog needs to recompose (sort order changed due to inventory modification)
+    private bool _needsRecompose;
 
     // Filter predicate for search filtering
     private System.Func<int, ItemSlot, bool> _filterPredicate;
@@ -64,9 +68,18 @@ public class SortedInventoryView : InventoryBase
 
     private void OnSlotModified(int slotId)
     {
-        // Mark dirty so we rebuild on next access
         _isDirty = true;
+        if (_sortMode != SortMode.None || _filterPredicate != null)
+        {
+            _needsRecompose = true;
+        }
     }
+
+    /// <summary>True when an inventory modification has changed the sort order since the last recompose.</summary>
+    public bool NeedsRecompose => _needsRecompose;
+
+    /// <summary>Call after recomposing the dialog to clear the flag.</summary>
+    public void ClearRecomposeFlag() => _needsRecompose = false;
 
     /// <summary>
     /// Get or set the current sort mode. Setting triggers a rebuild of the display order.
@@ -90,6 +103,23 @@ public class SortedInventoryView : InventoryBase
     public bool IsSorting => _sortMode != SortMode.None;
 
     /// <summary>
+    /// Whether empty slots should be shown when sorting is active.
+    /// Empty slots are always shown when sort mode is None.
+    /// </summary>
+    public bool ShowEmptySlotsWhenSorting
+    {
+        get => _showEmptySlotsWhenSorting;
+        set
+        {
+            if (_showEmptySlotsWhenSorting != value)
+            {
+                _showEmptySlotsWhenSorting = value;
+                _isDirty = true;
+            }
+        }
+    }
+
+    /// <summary>
     /// Access to the underlying composite inventory (for container boundaries when not sorting)
     /// </summary>
     public CompositeInventoryView Underlying => _underlying;
@@ -108,15 +138,17 @@ public class SortedInventoryView : InventoryBase
             return;
         }
 
-        // Collect slots that pass the filter (and are non-empty when sorting)
-        var filteredSlots = new List<(int index, string sortKey, int stackSize)>();
+        // Collect slots that pass the filter
+        var filteredSlots = new List<(int index, bool isEmpty, string sortKey, int stackSize)>();
 
         for (int i = 0; i < _underlying.Count; i++)
         {
             var slot = _underlying[i];
 
-            // When sorting is active, skip empty slots
-            if (_sortMode != SortMode.None && slot?.Itemstack == null)
+            bool isEmpty = slot?.Itemstack == null;
+
+            // Optionally hide empty slots when sorting is active.
+            if (_sortMode != SortMode.None && !_showEmptySlotsWhenSorting && isEmpty)
                 continue;
 
             // Apply filter predicate if set
@@ -124,10 +156,10 @@ public class SortedInventoryView : InventoryBase
                 continue;
 
             string sortKey = _sortMode != SortMode.None
-                ? GetSortKey(slot, _sortMode)
+                ? (isEmpty ? string.Empty : GetSortKey(slot, _sortMode))
                 : i.ToString("D6"); // Preserve original order when not sorting
             int stackSize = slot?.Itemstack?.StackSize ?? 0;
-            filteredSlots.Add((i, sortKey, stackSize));
+            filteredSlots.Add((i, isEmpty, sortKey, stackSize));
         }
 
         // Sort if sorting mode is active
@@ -135,7 +167,14 @@ public class SortedInventoryView : InventoryBase
         {
             filteredSlots.Sort((a, b) =>
             {
-                int cmp = string.Compare(a.sortKey, b.sortKey, StringComparison.OrdinalIgnoreCase);
+                // Always keep occupied slots before empty slots
+                int cmp = a.isEmpty.CompareTo(b.isEmpty);
+                if (cmp != 0) return cmp;
+
+                // For two empty slots, keep original container order
+                if (a.isEmpty) return a.index.CompareTo(b.index);
+
+                cmp = string.Compare(a.sortKey, b.sortKey, StringComparison.OrdinalIgnoreCase);
                 if (cmp != 0) return cmp;
 
                 // Larger stacks first
@@ -356,6 +395,21 @@ public class SortedInventoryView : InventoryBase
             return -1;
 
         return _displayOrder[displaySlotId];
+    }
+
+    /// <summary>
+    /// Public slot translation helper for GUI rendering (colors, overlays, etc.).
+    /// Returns -1 for invalid display slot IDs.
+    /// </summary>
+    public int GetUnderlyingSlotIndex(int displaySlotId)
+    {
+        // Keep display mapping up to date for consumers that don't access Count/indexer first.
+        if (_isDirty)
+        {
+            RebuildDisplayOrder();
+        }
+
+        return TranslateSlotId(displaySlotId);
     }
 
     // Persistence not needed - this is a transient view

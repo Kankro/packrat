@@ -4,7 +4,7 @@
   "name": "Packrat Fork",
   "authors": ["dizzyd", "Kankros"],
   "description": "Access multiple containers from a single dialog",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "dependencies": {
     "game": "1.22.2"
   }

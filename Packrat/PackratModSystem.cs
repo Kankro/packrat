@@ -87,7 +87,7 @@ public class PackratModSystem : ModSystem
     // Cache for Storage Controller's ContainerList property (accessed via reflection)
     private static PropertyInfo _storageControllerContainerListProp;
 
-    public static string ModId => "packrat";
+    public static string ModId => "packratfork";
 
     public override void Start(ICoreAPI api)
     {
@@ -232,6 +232,15 @@ public class PackratModSystem : ModSystem
     private static void OnSortModeChanged(SortMode newMode)
     {
         _config.SortMode = newMode;
+        _clientApi?.StoreModConfig(_config, $"{ModId}-client.json");
+    }
+
+    /// <summary>
+    /// Save client config when show-empty-slots preference changes
+    /// </summary>
+    private static void OnShowEmptySlotsChanged(bool showEmptySlots)
+    {
+        _config.ShowEmptySlotsWhenSorting = showEmptySlots;
         _clientApi?.StoreModConfig(_config, $"{ModId}-client.json");
     }
 
@@ -785,9 +794,10 @@ public class PackratModSystem : ModSystem
         // Create sorted view with persisted sort mode
         var sortedView = new SortedInventoryView(composite);
         sortedView.SortMode = _config?.SortMode ?? SortMode.None;
+        sortedView.ShowEmptySlotsWhenSorting = _config?.ShowEmptySlotsWhenSorting ?? true;
 
         // Create and show the browser dialog
-        _browserDialog = new GuiDialogStorageBrowser(_clientApi, sortedView, _openedContainers, OnSortModeChanged);
+        _browserDialog = new GuiDialogStorageBrowser(_clientApi, sortedView, _openedContainers, OnSortModeChanged, OnShowEmptySlotsChanged);
         _browserDialog.TryOpen();
         ResetBrowseMode();
     }
@@ -836,7 +846,7 @@ public class PackratModSystem : ModSystem
     /// </summary>
     [HarmonyPrefix]
     [HarmonyPatch(typeof(InventoryBase), nameof(InventoryBase.GetBestSuitedSlot),
-        new Type[] {typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>)})]
+        new Type[] { typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>) })]
     public static bool GetBestSuitedSlot_BlockContainerToContainer(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
         InventoryBase __instance, ref WeightedSlot __result)
     {
@@ -865,7 +875,7 @@ public class PackratModSystem : ModSystem
     /// </summary>
     [HarmonyPostfix]
     [HarmonyPatch(typeof(InventoryBase), nameof(InventoryBase.GetBestSuitedSlot),
-        new Type[] {typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>)})]
+        new Type[] { typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>) })]
     public static void GetBestSuitedSlot_CrateHandling(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
         InventoryBase __instance, ref WeightedSlot __result)
     {
@@ -926,7 +936,7 @@ public class PackratModSystem : ModSystem
     /// </summary>
     [HarmonyPostfix]
     [HarmonyPatch(typeof(InventoryBase), nameof(InventoryBase.GetBestSuitedSlot),
-        new Type[] {typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>)})]
+        new Type[] { typeof(ItemSlot), typeof(ItemStackMoveOperation), typeof(List<ItemSlot>) })]
     public static void GetBestSuitedSlot_PerishRateHandling(ItemSlot sourceSlot, ItemStackMoveOperation op, List<ItemSlot> skipSlots,
         InventoryBase __instance, ref WeightedSlot __result)
     {

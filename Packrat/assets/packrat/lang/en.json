@@ -1,6 +1,7 @@
 {
-    "packrat:openall": "[PackRat] Open All Containers",
-    "packrat:browser-title": "Storage Browser",
-    "packrat:browser-status": "{0} containers, {1} slots",
-    "packrat:search-placeholder": "Search items..."
+  "packratfork:openall": "[PackRat] Open All Containers",
+  "packratfork:browser-title": "Storage Browser",
+  "packratfork:browser-status": "{0} containers, {1} slots",
+  "packratfork:search-placeholder": "Search items...",
+  "packratfork:show-empty-label": "Show Empty"
 }
