@@ -21,7 +21,6 @@ Packrat helps you find what you need without opening every chest.
 | **Sorting**                | Sort all slots by name (A-Z), category, material, or spoilage time. Re-clicking the same sort mode re-sorts after item changes. Empty slots can be shown or hidden via the toggle. |
 | **Smart transfers**        | Shift-click prioritizes crates with matching items, then empty crates, then chests.                                                                                                |
 | **Crate awareness**        | Respects single-item-type restrictions and shows ghost items in empty crate slots.                                                                                                 |
-| **Localisation**           | UI strings translated into English, Italian, French, German, Spanish, Russian, Ukrainian, Portuguese, and Polish.                                                                  |
 
 ## How to use
 
