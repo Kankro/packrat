@@ -125,7 +125,7 @@ public class GuiDialogStorageBrowser : GuiDialog
         double gridWidth = (slotSize + pad) * Cols;
         double sortDropdownWidth = 96;
         double switchSize = 24;
-        double showEmptyLabelWidth = 86;
+        double showEmptyLabelWidth = 94;
         double showEmptyTotalWidth = showEmptyLabelWidth + 6 + switchSize;
         double searchBoxWidth = gridWidth + 12 - sortDropdownWidth - showEmptyTotalWidth - 16;
 
