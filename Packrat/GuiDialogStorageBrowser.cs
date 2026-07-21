@@ -49,6 +49,9 @@ public class GuiDialogStorageBrowser : GuiDialog
     // Track if search box had focus before recompose
     private bool _searchHadFocus;
 
+    // Accumulator for periodic check that browsed containers still exist in the world
+    private float _sinceContainerCheck;
+
     // Colors for container outlines (cycle through these) - RGB values
     private static readonly double[][] ContainerColors = new double[][]
     {
@@ -511,8 +514,26 @@ public class GuiDialogStorageBrowser : GuiDialog
         {
             if (container?.Inventory != null && container.Inventory.HasOpened(player))
             {
-                _capi.Network.SendPacketClient(container.Inventory.Close(player));
-                player.InventoryManager.CloseInventory(container.Inventory);
+                // Third-party Harmony patches on OnInvClosed can NRE
+                // because browse mode never created the per-container dialog they expect. Both calls
+                // below trigger OnInvClosed - don't let one broken patch crash the client and leave
+                // the other containers open. See https://github.com/Kankro/packrat/issues/1
+                try
+                {
+                    _capi.Network.SendPacketClient(container.Inventory.Close(player));
+                }
+                catch (Exception e)
+                {
+                    _capi.Logger.Warning("Packrat: exception while closing inventory at {0}, continuing: {1}", container.Pos, e);
+                }
+                try
+                {
+                    player.InventoryManager.CloseInventory(container.Inventory);
+                }
+                catch (Exception e)
+                {
+                    _capi.Logger.Warning("Packrat: exception while unregistering inventory at {0}, continuing: {1}", container.Pos, e);
+                }
 
                 // Send BlockEntity close packet for containers with lids so server broadcasts
                 // the lid state change to all clients
@@ -560,6 +581,22 @@ public class GuiDialogStorageBrowser : GuiDialog
     public override void OnRenderGUI(float deltaTime)
     {
         base.OnRenderGUI(deltaTime);
+
+        // Close the browser if any browsed container no longer exists in the world
+        // (broken, unloaded, or picked up by mods like tentbag that bypass normal close).
+        _sinceContainerCheck += deltaTime;
+        if (_sinceContainerCheck > 0.25f)
+        {
+            _sinceContainerCheck = 0;
+            foreach (var container in _containers)
+            {
+                if (_capi.World.BlockAccessor.GetBlockEntity(container.Pos) != container)
+                {
+                    TryClose();
+                    return;
+                }
+            }
+        }
 
         // Check if slot count changed or sort order changed due to inventory modifications
         bool needsRecompose = _sortedInventory.NeedsRecompose;
