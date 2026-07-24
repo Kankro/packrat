@@ -60,15 +60,18 @@ public class PackratModSystem : ModSystem
     // Debug logging (toggle with .packratdebug command)
     private static bool _debugLogging;
 
+    // True while the openall hotkey is physically held, to ignore OS key-repeat
+    private static bool _hotkeyHeld;
+
     // Registry of storage container types to include in scanning
     private static readonly HashSet<Type> _storageContainerTypes = new();
 
     // Types that need OnReceivedServerPacket patched (where the method is defined/overridden)
     private static readonly HashSet<Type> _typesToPatch = new();
 
-    // Default mod container registry, written to ModConfig/packratfork-containers.json on
-    // first start. The config file is the source of truth after that - users can add support
-    // for other storage mods by adding entries there (see ContainerEntry for field docs).
+    // Built-in mod container registry, maintained in code and always current with the release.
+    // Users can add or override entries via ModConfig/packratfork/containers.json (empty by
+    // default, merged on top of these at load - see LoadContainerEntries).
     private static List<ContainerEntry> DefaultContainerEntries()
     {
         // Helper for the MoreInventorys racks: custom packet flow (1000/1001/2000), never send
@@ -170,7 +173,7 @@ public class PackratModSystem : ModSystem
         // Discover and add mod container types from the config registry
         foreach (var entry in LoadContainerEntries())
         {
-            if (string.IsNullOrWhiteSpace(entry?.Type)) continue;
+            if (string.IsNullOrWhiteSpace(entry?.Type) || !entry.Enabled) continue;
 
             var type = AccessTools.TypeByName(entry.Type);
             if (type == null) continue;
@@ -194,39 +197,55 @@ public class PackratModSystem : ModSystem
         _api.Logger.Debug($"[PackRat] Total storage types: {_storageContainerTypes.Count}, types to patch: {_typesToPatch.Count}");
     }
 
-    private const string ContainersConfigFile = "packratfork-containers.json";
+    // Packrat config files live in their own subfolder to keep ModConfig tidy
+    // (StoreModConfig creates the directory automatically)
+    private const string ContainersConfigFile = "packratfork/containers.json";
+    private const string ClientConfigFile = "packratfork/client.json";
 
     /// <summary>
-    /// Load the container registry from ModConfig/packratfork-containers.json.
-    /// Writes the defaults on first start; falls back to them if the file is malformed.
+    /// Build the effective container registry: the built-in defaults (DefaultContainerEntries,
+    /// maintained in code and always current with the release) plus the user's additions from
+    /// ModConfig/packratfork/containers.json. The user file starts empty; a user entry with the
+    /// same Type as a default overrides it (e.g. to disable it with "Enabled": false).
+    /// A malformed user file is ignored with an error, never overwritten.
     /// </summary>
     private List<ContainerEntry> LoadContainerEntries()
     {
+        var entries = DefaultContainerEntries();
+
+        PackratContainersConfig config;
         try
         {
-            var config = _api.LoadModConfig<PackratContainersConfig>(ContainersConfigFile);
-            if (config?.Containers is { Count: > 0 })
-            {
-                return config.Containers;
-            }
+            config = _api.LoadModConfig<PackratContainersConfig>(ContainersConfigFile);
         }
         catch (Exception e)
         {
-            _api.Logger.Error($"[PackRat] Could not read {ContainersConfigFile}, using built-in defaults: {e.Message}");
-            return DefaultContainerEntries();
+            _api.Logger.Error($"[PackRat] Could not read {ContainersConfigFile}, using built-in defaults only: {e.Message}");
+            return entries;
         }
 
-        // No config yet - write the defaults so users can extend them
-        var defaults = new PackratContainersConfig { Containers = DefaultContainerEntries() };
-        try
+        if (config == null)
         {
-            _api.StoreModConfig(defaults, ContainersConfigFile);
+            // First start: write an empty template for users to fill in
+            try
+            {
+                _api.StoreModConfig(new PackratContainersConfig(), ContainersConfigFile);
+            }
+            catch (Exception e)
+            {
+                _api.Logger.Warning($"[PackRat] Could not write {ContainersConfigFile}: {e.Message}");
+            }
+            return entries;
         }
-        catch (Exception e)
+
+        foreach (var user in config.Containers ?? new List<ContainerEntry>())
         {
-            _api.Logger.Warning($"[PackRat] Could not write {ContainersConfigFile}: {e.Message}");
+            if (string.IsNullOrWhiteSpace(user?.Type)) continue;
+            entries.RemoveAll(d => d.Type == user.Type);
+            entries.Add(user);
         }
-        return defaults.Containers;
+
+        return entries;
     }
 
     /// <summary>
@@ -276,8 +295,10 @@ public class PackratModSystem : ModSystem
         base.StartClientSide(api);
         _clientApi = api;
 
-        // Load client config
-        _config = api.LoadModConfig<PackratConfig>($"{ModId}-client.json") ?? new PackratConfig();
+        // Load client config (falling back to the pre-1.1.4 root-level file name)
+        _config = api.LoadModConfig<PackratConfig>(ClientConfigFile)
+                  ?? api.LoadModConfig<PackratConfig>($"{ModId}-client.json")
+                  ?? new PackratConfig();
 
         _roomSystem = api.ModLoader.GetModSystem<RoomRegistry>();
         _reinforcementSystem = api.ModLoader.GetModSystem<ModSystemBlockReinforcement>();
@@ -289,6 +310,15 @@ public class PackratModSystem : ModSystem
             GlKeys.R,
             HotkeyType.CharacterControls);
         api.Input.SetHotKeyHandler(hotkey, OpenAll);
+
+        // Holding the hotkey triggers OS key-repeat, which would rapidly toggle the browser.
+        // Swallow repeats until the key is physically released (Event.KeyUp fires before any
+        // GUI handling, so it is reliable even while the browser has focus).
+        api.Event.KeyUp += ev =>
+        {
+            if (ev.KeyCode == api.Input.GetHotKeyByCode(hotkey)?.CurrentMapping?.KeyCode)
+                _hotkeyHeld = false;
+        };
 
         // Handle server confirmation for crate inventories
         api.Network
@@ -311,7 +341,7 @@ public class PackratModSystem : ModSystem
     private static void OnSortModeChanged(SortMode newMode)
     {
         _config.SortMode = newMode;
-        _clientApi?.StoreModConfig(_config, $"{ModId}-client.json");
+        _clientApi?.StoreModConfig(_config, ClientConfigFile);
     }
 
     /// <summary>
@@ -320,7 +350,7 @@ public class PackratModSystem : ModSystem
     private static void OnShowEmptySlotsChanged(bool showEmptySlots)
     {
         _config.ShowEmptySlotsWhenSorting = showEmptySlots;
-        _clientApi?.StoreModConfig(_config, $"{ModId}-client.json");
+        _clientApi?.StoreModConfig(_config, ClientConfigFile);
     }
 
 
@@ -677,6 +707,10 @@ public class PackratModSystem : ModSystem
 
     public bool OpenAll(KeyCombination _)
     {
+        // Ignore OS key-repeat while the hotkey is held - only the first press toggles
+        if (_hotkeyHeld) return true;
+        _hotkeyHeld = true;
+
         var player = _clientApi.World.Player;
 
         // If browser is already open, close it
