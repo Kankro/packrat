@@ -82,6 +82,16 @@ public class PackratModSystem : ModSystem
         ("PrimitiveSurvival.ModSystem.BETreeHollowPlaced", false),
         // Primitive Survival - grown tree hollows (extends BlockEntityDisplayCase, direct access like crates)
         ("PrimitiveSurvival.ModSystem.BETreeHollowGrown", false),
+        // MoreInventorys - has its Racks has own OnReceivedServerPacket implementation
+        ("MoreInventorys.src.BlockEntityFolder.BERackHorizontal", true),
+        ("MoreInventorys.src.BlockEntityFolder.BERackHorizontal2x2", true),
+        ("MoreInventorys.src.BlockEntityFolder.BERackVertical", true),
+        ("MoreInventorys.src.BlockEntityFolder.BERackVertical1x2", true),
+        ("MoreInventorys.src.BlockEntityFolder.BERackStick", true),
+        ("MoreInventorys.src.BlockEntityFolder.BERackStick1x2", true),
+        // MoreInventorys - Basket & Closed crate
+        ("MoreInventorys.src.BlockEntityFolder.BECrateClosed", false),
+        ("MoreInventorys.src.BlockEntityFolder.BEBasketClosed", false),
     };
 
     // Cache for Storage Controller's ContainerList property (accessed via reflection)
@@ -687,11 +697,17 @@ public class PackratModSystem : ModSystem
             int directAccessCount = 0;
             foreach (var chest in chests)
             {
-                if (IsDirectAccessContainer(chest))
+                // Added check if it's from moreinventorys mod, without there was 3s lag 
+                if (IsDirectAccessContainer(chest) || IsMoreInventorysRack(chest))
+                {
                     directAccessCount++;
+                }
                 else
+                {
                     _pendingPositions.Add(chest.Pos.Copy());
+                }
             }
+
 
             // Debug logging: show all candidates expected to send inventory
             if (_debugLogging)
@@ -755,6 +771,26 @@ public class PackratModSystem : ModSystem
             ShowBrowser();
         }
     }
+    private static bool IsMoreInventorysRack(BlockEntity be)
+    {
+        return be.GetType().FullName?.Contains("MoreInventorys") == true;
+    }
+    // Skips slots that are locked by containers
+    private static int GetInventoryStartingSlot(BlockEntityContainer container)
+    {
+        var typeName = container.GetType().FullName;
+
+        return typeName switch
+        {
+            "MoreInventorys.src.BlockEntityFolder.BERackHorizontal" => 6,
+            "MoreInventorys.src.BlockEntityFolder.BERackHorizontal2x2" => 4,
+            "MoreInventorys.src.BlockEntityFolder.BERackVertical" => 3,
+            "MoreInventorys.src.BlockEntityFolder.BERackVertical1x2" => 2,
+            "MoreInventorys.src.BlockEntityFolder.BERackStick" => 4,
+            "MoreInventorys.src.BlockEntityFolder.BERackStick1x2" => 2,
+            _ => 0
+        };
+    }
 
     private static void ShowBrowser()
     {
@@ -773,7 +809,8 @@ public class PackratModSystem : ModSystem
 
             bool isCrate = IsCrate(container);
             bool isDirect = IsDirectAccessContainer(container);
-            composite.AddInventory(container.Inventory, isCrate);
+
+                composite.AddInventory(container.Inventory, isCrate, GetInventoryStartingSlot(container));
 
             // Make sure direct access inventories are opened on the client
             // (Chests are opened via the Harmony patch, but direct access containers bypass that)
