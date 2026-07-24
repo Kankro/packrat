@@ -66,33 +66,58 @@ public class PackratModSystem : ModSystem
     // Types that need OnReceivedServerPacket patched (where the method is defined/overridden)
     private static readonly HashSet<Type> _typesToPatch = new();
 
-    // Mod container types to discover at runtime: (TypeName, NeedsPatch)
-    // NeedsPatch = true if the type has its own OnReceivedServerPacket (not inherited)
-    private static readonly (string TypeName, bool NeedsPatch)[] _modContainerTypes =
+    // Default mod container registry, written to ModConfig/packratfork-containers.json on
+    // first start. The config file is the source of truth after that - users can add support
+    // for other storage mods by adding entries there (see ContainerEntry for field docs).
+    private static List<ContainerEntry> DefaultContainerEntries()
     {
-        // SortableStorage - has its own OnReceivedServerPacket implementation
-        ("SortableStorage.ModSystem.BESortableOpenableContainer", true),
-        // ContainersBundle - extends BlockEntityOpenableContainer, inherits patched method
-        ("ContainersBundle.BlockEntityCBContainer", false),
-        // BetterCrates - extends BlockEntityContainer, uses direct inventory access like vanilla crates
-        ("BetterCratesNamespace.BetterCrateBlockEntity", false),
-        // StorageController - extends BlockEntityGenericTypedContainer, links to other containers
-        ("storagecontroller.BlockEntityStorageController", false),
-        // Primitive Survival - placed tree hollows (extends BlockEntityOpenableContainer)
-        ("PrimitiveSurvival.ModSystem.BETreeHollowPlaced", false),
-        // Primitive Survival - grown tree hollows (extends BlockEntityDisplayCase, direct access like crates)
-        ("PrimitiveSurvival.ModSystem.BETreeHollowGrown", false),
-        // MoreInventorys - has its Racks has own OnReceivedServerPacket implementation
-        ("MoreInventorys.src.BlockEntityFolder.BERackHorizontal", true),
-        ("MoreInventorys.src.BlockEntityFolder.BERackHorizontal2x2", true),
-        ("MoreInventorys.src.BlockEntityFolder.BERackVertical", true),
-        ("MoreInventorys.src.BlockEntityFolder.BERackVertical1x2", true),
-        ("MoreInventorys.src.BlockEntityFolder.BERackStick", true),
-        ("MoreInventorys.src.BlockEntityFolder.BERackStick1x2", true),
-        // MoreInventorys - Basket & Closed crate
-        ("MoreInventorys.src.BlockEntityFolder.BECrateClosed", false),
-        ("MoreInventorys.src.BlockEntityFolder.BEBasketClosed", false),
-    };
+        // Helper for the MoreInventorys racks: custom packet flow (1000/1001/2000), never send
+        // OpenInventory (5000) so no patch needed, must be direct access (else the 3s timeout),
+        // and their leading container-block slots are hidden (count read from the inventory).
+        static ContainerEntry Rack(string type) => new()
+        {
+            Type = type,
+            DirectAccess = true,
+            HiddenLeadingSlotsField = "MaxContainerBlockSlots",
+        };
+
+        return new List<ContainerEntry>
+        {
+            // SortableStorage - has its own OnReceivedServerPacket implementation
+            new() { Type = "SortableStorage.ModSystem.BESortableOpenableContainer", NeedsPatch = true },
+            // ContainersBundle - extends BlockEntityOpenableContainer, inherits patched method
+            new() { Type = "ContainersBundle.BlockEntityCBContainer" },
+            // BetterCrates - extends BlockEntityContainer, uses direct inventory access like vanilla crates
+            new() { Type = "BetterCratesNamespace.BetterCrateBlockEntity", DirectAccess = true },
+            // StorageController - extends BlockEntityGenericTypedContainer, links to other containers
+            new() { Type = "storagecontroller.BlockEntityStorageController" },
+            // Primitive Survival - placed tree hollows (extends BlockEntityOpenableContainer)
+            new() { Type = "PrimitiveSurvival.ModSystem.BETreeHollowPlaced" },
+            // Primitive Survival - grown tree hollows (extends BlockEntityDisplayCase, direct access like crates)
+            new() { Type = "PrimitiveSurvival.ModSystem.BETreeHollowGrown", DirectAccess = true },
+            // MoreInventorys racks
+            Rack("MoreInventorys.src.BlockEntityFolder.BERackHorizontal"),
+            Rack("MoreInventorys.src.BlockEntityFolder.BERackHorizontal2x2"),
+            Rack("MoreInventorys.src.BlockEntityFolder.BERackHorizontalWood2x2"),
+            Rack("MoreInventorys.src.BlockEntityFolder.BERackHorizontalWood2x3"),
+            Rack("MoreInventorys.src.BlockEntityFolder.BERackVertical"),
+            Rack("MoreInventorys.src.BlockEntityFolder.BERackVertical1x2"),
+            Rack("MoreInventorys.src.BlockEntityFolder.BERackStick"),
+            Rack("MoreInventorys.src.BlockEntityFolder.BERackStick1x2"),
+            // MoreInventorys - closed crate & basket, custom dialogs, direct access as well
+            new() { Type = "MoreInventorys.src.BlockEntityFolder.BECrateClosed", DirectAccess = true },
+            new() { Type = "MoreInventorys.src.BlockEntityFolder.BEBasketClosed", DirectAccess = true },
+        };
+    }
+
+    // Container types resolved from the config registry that use direct inventory access
+    private static readonly HashSet<Type> _directAccessTypes = new();
+
+    // Hidden-leading-slot spec per resolved container type: fixed count and/or inventory field name
+    private static readonly Dictionary<Type, (int Fixed, string FieldName)> _hiddenSlotSpecs = new();
+
+    // Cache of resolved inventory fields for HiddenLeadingSlotsField lookups
+    private static readonly Dictionary<(Type InvType, string Field), FieldInfo> _hiddenSlotFieldCache = new();
 
     // Cache for Storage Controller's ContainerList property (accessed via reflection)
     private static PropertyInfo _storageControllerContainerListProp;
@@ -142,22 +167,66 @@ public class PackratModSystem : ModSystem
 
         _api.Logger.Debug("[PackRat] Registered vanilla container types");
 
-        // Discover and add mod container types
-        foreach (var (typeName, needsPatch) in _modContainerTypes)
+        // Discover and add mod container types from the config registry
+        foreach (var entry in LoadContainerEntries())
         {
-            var type = AccessTools.TypeByName(typeName);
-            if (type != null)
+            if (string.IsNullOrWhiteSpace(entry?.Type)) continue;
+
+            var type = AccessTools.TypeByName(entry.Type);
+            if (type == null) continue;
+
+            _storageContainerTypes.Add(type);
+            if (entry.NeedsPatch)
             {
-                _storageContainerTypes.Add(type);
-                if (needsPatch)
-                {
-                    _typesToPatch.Add(type);
-                }
-                _api.Logger.Notification($"[PackRat] Discovered mod container type: {typeName}");
+                _typesToPatch.Add(type);
             }
+            if (entry.DirectAccess)
+            {
+                _directAccessTypes.Add(type);
+            }
+            if (entry.HiddenLeadingSlots > 0 || !string.IsNullOrWhiteSpace(entry.HiddenLeadingSlotsField))
+            {
+                _hiddenSlotSpecs[type] = (entry.HiddenLeadingSlots, entry.HiddenLeadingSlotsField);
+            }
+            _api.Logger.Notification($"[PackRat] Discovered mod container type: {entry.Type}");
         }
 
         _api.Logger.Debug($"[PackRat] Total storage types: {_storageContainerTypes.Count}, types to patch: {_typesToPatch.Count}");
+    }
+
+    private const string ContainersConfigFile = "packratfork-containers.json";
+
+    /// <summary>
+    /// Load the container registry from ModConfig/packratfork-containers.json.
+    /// Writes the defaults on first start; falls back to them if the file is malformed.
+    /// </summary>
+    private List<ContainerEntry> LoadContainerEntries()
+    {
+        try
+        {
+            var config = _api.LoadModConfig<PackratContainersConfig>(ContainersConfigFile);
+            if (config?.Containers is { Count: > 0 })
+            {
+                return config.Containers;
+            }
+        }
+        catch (Exception e)
+        {
+            _api.Logger.Error($"[PackRat] Could not read {ContainersConfigFile}, using built-in defaults: {e.Message}");
+            return DefaultContainerEntries();
+        }
+
+        // No config yet - write the defaults so users can extend them
+        var defaults = new PackratContainersConfig { Containers = DefaultContainerEntries() };
+        try
+        {
+            _api.StoreModConfig(defaults, ContainersConfigFile);
+        }
+        catch (Exception e)
+        {
+            _api.Logger.Warning($"[PackRat] Could not write {ContainersConfigFile}: {e.Message}");
+        }
+        return defaults.Containers;
     }
 
     /// <summary>
@@ -322,12 +391,12 @@ public class PackratModSystem : ModSystem
         if (invId?.StartsWith("crate-") == true || invId?.StartsWith("bettercrate-") == true)
             return true;
 
-        // Check by type hierarchy - BlockEntityDisplayCase and its subclasses use direct access
-        // (includes Primitive Survival's BETreeHollowGrown which extends BlockEntityDisplayCase)
+        // Check by type hierarchy - registry types flagged DirectAccess, plus
+        // BlockEntityDisplayCase and its subclasses (which never send inventory packets)
         var checkType = container.GetType();
         while (checkType != null && checkType != typeof(object))
         {
-            if (checkType.Name == "BlockEntityDisplayCase" || checkType.Name == "BETreeHollowGrown")
+            if (_directAccessTypes.Contains(checkType) || checkType.Name == "BlockEntityDisplayCase")
                 return true;
             checkType = checkType.BaseType;
         }
@@ -342,6 +411,44 @@ public class PackratModSystem : ModSystem
     {
         var invId = container.Inventory?.InventoryID;
         return invId?.StartsWith("crate-") == true || invId?.StartsWith("bettercrate-") == true;
+    }
+
+    /// <summary>
+    /// Number of leading inventory slots to hide in the browser for this container,
+    /// per its registry entry (e.g. MoreInventorys rack slots that hold the container
+    /// blocks themselves). A HiddenLeadingSlotsField entry reads the count from a public
+    /// int field on the inventory at runtime, so per-type slot layouts stay in the mod.
+    /// </summary>
+    private static int GetHiddenLeadingSlots(BlockEntityContainer container)
+    {
+        if (_hiddenSlotSpecs.Count == 0 || container?.Inventory == null) return 0;
+
+        // Find the registry spec for this type or a base type
+        (int Fixed, string FieldName) spec = default;
+        bool found = false;
+        var checkType = container.GetType();
+        while (checkType != null && checkType != typeof(object))
+        {
+            if (_hiddenSlotSpecs.TryGetValue(checkType, out spec))
+            {
+                found = true;
+                break;
+            }
+            checkType = checkType.BaseType;
+        }
+        if (!found) return 0;
+
+        if (string.IsNullOrWhiteSpace(spec.FieldName)) return spec.Fixed;
+
+        var invType = container.Inventory.GetType();
+        var cacheKey = (invType, spec.FieldName);
+        if (!_hiddenSlotFieldCache.TryGetValue(cacheKey, out var field))
+        {
+            field = AccessTools.Field(invType, spec.FieldName);
+            _hiddenSlotFieldCache[cacheKey] = field; // null cached too: don't re-scan every open
+        }
+
+        return field?.GetValue(container.Inventory) is int count ? count : spec.Fixed;
     }
 
     /// <summary>
@@ -697,17 +804,11 @@ public class PackratModSystem : ModSystem
             int directAccessCount = 0;
             foreach (var chest in chests)
             {
-                // Added check if it's from moreinventorys mod, without there was 3s lag
-                if (IsDirectAccessContainer(chest) || IsMoreInventorysRack(chest))
-                {
+                if (IsDirectAccessContainer(chest))
                     directAccessCount++;
-                }
                 else
-                {
                     _pendingPositions.Add(chest.Pos.Copy());
-                }
             }
-
 
             // Debug logging: show all candidates expected to send inventory
             if (_debugLogging)
@@ -771,27 +872,6 @@ public class PackratModSystem : ModSystem
             ShowBrowser();
         }
     }
-    private static bool IsMoreInventorysRack(BlockEntity be)
-    {
-        return be.GetType().FullName?.Contains("MoreInventorys") == true;
-    }
-    // Skips slots that are locked by containers
-    private static int GetInventoryStartingSlot(BlockEntityContainer container)
-    {
-        var typeName = container.GetType().FullName;
-
-        return typeName switch
-        {
-            "MoreInventorys.src.BlockEntityFolder.BERackHorizontal" => 6,
-            "MoreInventorys.src.BlockEntityFolder.BERackHorizontal2x2" => 4,
-            "MoreInventorys.src.BlockEntityFolder.BERackVertical" => 3,
-            "MoreInventorys.src.BlockEntityFolder.BERackVertical1x2" => 2,
-            "MoreInventorys.src.BlockEntityFolder.BERackStick" => 4,
-            "MoreInventorys.src.BlockEntityFolder.BERackStick1x2" => 2,
-            _ => 0
-        };
-    }
-
     private static void ShowBrowser()
     {
         if (_clientApi == null || _openedContainers.Count == 0)
@@ -810,7 +890,7 @@ public class PackratModSystem : ModSystem
             bool isCrate = IsCrate(container);
             bool isDirect = IsDirectAccessContainer(container);
 
-            composite.AddInventory(container.Inventory, isCrate, GetInventoryStartingSlot(container));
+            composite.AddInventory(container.Inventory, isCrate, GetHiddenLeadingSlots(container));
 
             // Make sure direct access inventories are opened on the client
             // (Chests are opened via the Harmony patch, but direct access containers bypass that)

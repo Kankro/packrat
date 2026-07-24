@@ -47,8 +47,8 @@ public class CompositeInventoryView : InventoryBase
     /// </summary>
     /// <param name="inv">The inventory to add</param>
     /// <param name="isCrate">If true, this inventory has crate-style item type restrictions</param>
-    /// Added starting slot (default 0), so it's possible to skip slots e.g. when the chest is dyniamic and starting slots are locked in GUI
-    public void AddInventory(InventoryBase inv, bool isCrate = false, int startingslot = 0)
+    /// <param name="startingSlot">First slot to expose; earlier slots are hidden (e.g. MoreInventorys rack slots holding the container blocks themselves)</param>
+    public void AddInventory(InventoryBase inv, bool isCrate = false, int startingSlot = 0)
     {
         if (_sourceInventories.Contains(inv)) return;
 
@@ -58,11 +58,11 @@ public class CompositeInventoryView : InventoryBase
         {
             _crateInventories.Add(inv);
         }
-        for (int i = startingslot; i < inv.Count; i++)
+        for (int i = startingSlot; i < inv.Count; i++)
         {
             _slotMap.Add((inv, i));
         }
-        _containerBoundaries.Add((startIndex, inv.Count));
+        _containerBoundaries.Add((startIndex, inv.Count - startingSlot));
     }
 
     /// <summary>

@@ -52,6 +52,12 @@ public class GuiDialogStorageBrowser : GuiDialog
     // Accumulator for periodic check that browsed containers still exist in the world
     private float _sinceContainerCheck;
 
+    // First slot of each container, to detect inventories that replace their slot instances
+    // on server sync (e.g. MoreInventorys InventoryDynamic) - the slot grid caches slot
+    // references, so stale slots would render as empty until recomposed
+    private ItemSlot[] _slotIdentity;
+    private bool _slotsReplaced;
+
     // Colors for container outlines (cycle through these) - RGB values
     private static readonly double[][] ContainerColors = new double[][]
     {
@@ -81,6 +87,12 @@ public class GuiDialogStorageBrowser : GuiDialog
         _containers = containers;
         _onSortModeChanged = onSortModeChanged;
         _onShowEmptySlotsChanged = onShowEmptySlotsChanged;
+
+        _slotIdentity = new ItemSlot[_containers.Count];
+        for (int i = 0; i < _containers.Count; i++)
+        {
+            _slotIdentity[i] = _containers[i]?.Inventory?[0];
+        }
 
         // Make dialog movable by default (set initial position if none stored)
         if (_capi.Gui.GetDialogPosition(DialogName) == null)
@@ -588,21 +600,33 @@ public class GuiDialogStorageBrowser : GuiDialog
         if (_sinceContainerCheck > 0.25f)
         {
             _sinceContainerCheck = 0;
-            foreach (var container in _containers)
+            for (int i = 0; i < _containers.Count; i++)
             {
+                var container = _containers[i];
                 if (_capi.World.BlockAccessor.GetBlockEntity(container.Pos) != container)
                 {
                     TryClose();
                     return;
                 }
+
+                // Detect inventories that replaced their slot instances on server sync
+                // (e.g. MoreInventorys InventoryDynamic): the slot grid caches slot
+                // references, so stale slots would render as empty items
+                var firstSlot = container.Inventory?[0];
+                if (!ReferenceEquals(_slotIdentity[i], firstSlot))
+                {
+                    _slotIdentity[i] = firstSlot;
+                    _slotsReplaced = true;
+                }
             }
         }
 
         // Check if slot count changed or sort order changed due to inventory modifications
-        bool needsRecompose = _sortedInventory.NeedsRecompose;
+        bool needsRecompose = _sortedInventory.NeedsRecompose || _slotsReplaced;
         int currentCount = _sortedInventory.Count;
         if (needsRecompose || currentCount != _lastSlotCount)
         {
+            _slotsReplaced = false;
             _sortedInventory.ClearRecomposeFlag();
 
             // Save scroll position and search focus before recomposing
