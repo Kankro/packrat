@@ -697,7 +697,7 @@ public class PackratModSystem : ModSystem
             int directAccessCount = 0;
             foreach (var chest in chests)
             {
-                // Added check if it's from moreinventorys mod, without there was 3s lag 
+                // Added check if it's from moreinventorys mod, without there was 3s lag
                 if (IsDirectAccessContainer(chest) || IsMoreInventorysRack(chest))
                 {
                     directAccessCount++;
@@ -810,7 +810,7 @@ public class PackratModSystem : ModSystem
             bool isCrate = IsCrate(container);
             bool isDirect = IsDirectAccessContainer(container);
 
-                composite.AddInventory(container.Inventory, isCrate, GetInventoryStartingSlot(container));
+            composite.AddInventory(container.Inventory, isCrate, GetInventoryStartingSlot(container));
 
             // Make sure direct access inventories are opened on the client
             // (Chests are opened via the Harmony patch, but direct access containers bypass that)
