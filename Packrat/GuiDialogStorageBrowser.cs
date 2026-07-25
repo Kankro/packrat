@@ -143,6 +143,9 @@ public class GuiDialogStorageBrowser : GuiDialog
         double showEmptyLabelWidth = 94;
         double showEmptyTotalWidth = showEmptyLabelWidth + 6 + switchSize;
         double searchBoxWidth = gridWidth + 12 - sortDropdownWidth - showEmptyTotalWidth - 16;
+        // The show-empty toggle only has an effect while sorting - hide it otherwise
+        // to avoid confusion, and give its width back to the search box
+        bool showEmptyVisible = _sortedInventory.IsSorting;
 
         // Background bounds - child elements will be positioned relative to this
         ElementBounds bgBounds = ElementBounds.Fill.WithFixedPadding(elemToDlgPad);
@@ -186,10 +189,16 @@ public class GuiDialogStorageBrowser : GuiDialog
             .AddDialogTitleBar(title, OnTitleBarClose)
             .BeginChildElements(bgBounds)
                 .AddTextInput(searchBounds, OnSearchTextChanged, CairoFont.WhiteSmallText(), "searchbox")
-                .AddDropDown(SortModeNames, SortModeNames, (int)_sortedInventory.SortMode, OnSortModeSelected, sortDropdownBounds, "sortdropdown")
+                .AddDropDown(SortModeNames, SortModeNames, (int)_sortedInventory.SortMode, OnSortModeSelected, sortDropdownBounds, "sortdropdown");
+
+        if (showEmptyVisible)
+        {
+            composer
                 .AddStaticText(showEmptyLabel, CairoFont.WhiteSmallText(), showEmptyLabelBounds)
-                .AddSwitch(OnShowEmptyToggled, showEmptySwitchBounds, "showemptyswitch", switchSize)
-                .AddInset(insetBounds);
+                .AddSwitch(OnShowEmptyToggled, showEmptySwitchBounds, "showemptyswitch", switchSize);
+        }
+
+        composer.AddInset(insetBounds);
 
         if (needsScrollbar)
         {
@@ -234,7 +243,10 @@ public class GuiDialogStorageBrowser : GuiDialog
         }
 
         // Restore switch state
-        SingleComposer.GetSwitch("showemptyswitch").SetValue(_sortedInventory.ShowEmptySlotsWhenSorting);
+        if (showEmptyVisible)
+        {
+            SingleComposer.GetSwitch("showemptyswitch").SetValue(_sortedInventory.ShowEmptySlotsWhenSorting);
+        }
 
         // Restore focus state from before recompose
         if (_searchHadFocus)
@@ -665,9 +677,15 @@ public class GuiDialogStorageBrowser : GuiDialog
         double visibleTop = _insetBounds?.absY ?? double.MinValue;
         double visibleBottom = _insetBounds != null ? _insetBounds.absY + _insetBounds.OuterHeight : double.MaxValue;
 
-        // Render ghost items for empty crate slots (only when NOT sorting and NOT filtering)
-        if (!_sortedInventory.IsSorting && !_sortedInventory.IsFiltering)
+        // Render ghost items for empty crate slots. Display indices are translated to
+        // composite indices, so this also works while sorting with Show Empty active
+        // (when filtering, empty slots are excluded from the view, so nothing renders).
         {
+            // Clip to the grid inset: partially scrolled-out slots must not draw over
+            // the search box / sort dropdown / show-empty controls above the grid
+            bool clipped = _insetBounds != null;
+            if (clipped) _capi.Render.PushScissor(_insetBounds, true);
+
             // Light ghost effect - ~15% opacity white
             int ghostColor = (40 << 24) | (255 << 16) | (255 << 8) | 255;
 
@@ -677,9 +695,11 @@ public class GuiDialogStorageBrowser : GuiDialog
 
                 // Only render ghost for empty crate slots
                 if (slot?.Itemstack != null) continue;
-                if (!_sortedInventory.Underlying.IsSlotInCrate(i)) continue;
 
-                var templateItem = _sortedInventory.Underlying.GetCrateTemplateItem(i);
+                int underlyingIndex = _sortedInventory.ToUnderlyingIndex(i);
+                if (!_sortedInventory.Underlying.IsSlotInCrate(underlyingIndex)) continue;
+
+                var templateItem = _sortedInventory.Underlying.GetCrateTemplateItem(underlyingIndex);
                 if (templateItem == null) continue;
 
                 // Calculate slot position (gridY already has scroll applied)
@@ -705,6 +725,8 @@ public class GuiDialogStorageBrowser : GuiDialog
                     showStackSize: false
                 );
             }
+
+            if (clipped) _capi.Render.PopScissor();
         }
     }
 }

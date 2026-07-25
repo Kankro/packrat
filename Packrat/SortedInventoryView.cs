@@ -189,6 +189,17 @@ public class SortedInventoryView : InventoryBase
     }
 
     /// <summary>
+    /// Map a display slot index to its index in the underlying composite inventory.
+    /// Identity when no sorting/filtering is active.
+    /// </summary>
+    public int ToUnderlyingIndex(int displayIndex)
+    {
+        if (_displayOrder == null || displayIndex < 0 || displayIndex >= _displayOrder.Length)
+            return displayIndex;
+        return _displayOrder[displayIndex];
+    }
+
+    /// <summary>
     /// Get the sort key for an item based on the sort mode
     /// </summary>
     private string GetSortKey(ItemSlot slot, SortMode mode)

@@ -29,7 +29,7 @@ Packrat helps you find what you need without opening every chest.
 3. Browse the unified grid — colored backgrounds indicate different containers.
 4. Use the **search box** (or press `/`) to filter by item name, material, or food category.
 5. Use the **sort dropdown** to order slots by name, category, material, or spoilage time.
-6. Toggle **Show Empty** to hide or show empty slots when sorting is active.
+6. Toggle **Show Empty** (appears while a sort mode is active) to hide or show empty slots.
 7. Click or shift-click to move items as usual.
 
 > **Note:** Packrat respects reinforced and locked containers — if you can't open it normally, Packrat won't open it either.
